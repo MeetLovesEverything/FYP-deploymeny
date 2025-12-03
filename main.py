@@ -12,10 +12,22 @@ import os
 import sys
 import threading
 
+# Print IMMEDIATELY when module loads - before any other imports
+print("=" * 60, flush=True)
+print("STARTUP: main.py module is loading...", flush=True)
+print(f"STARTUP: Python version {sys.version.split()[0]}", flush=True)
+print(f"STARTUP: Working directory: {os.getcwd()}", flush=True)
+print("=" * 60, flush=True)
+
 from model import genreNet 
 from config import GENRES 
 
+print("STARTUP: Imports successful", flush=True)
+print("STARTUP: Creating FastAPI app...", flush=True)
+
 app = FastAPI(title="Audio Genre Classification API")
+
+print("STARTUP: FastAPI app created", flush=True)
 
 MODEL_PATH = "net.pt"
 DEVICE = "cpu"
@@ -25,6 +37,15 @@ le = None
 model = None
 _loading = False
 _load_lock = threading.Lock()
+
+# Startup event - signals to uvicorn that app is ready
+@app.on_event("startup")
+async def startup_event():
+    print("=" * 60, flush=True)
+    print("UVICORN: Application startup event triggered", flush=True)
+    print("UVICORN: Server is binding to port", flush=True)
+    print("UVICORN: App is ready to receive requests", flush=True)
+    print("=" * 60, flush=True)
 
 def ensure_model_loaded():
     """Load model if not already loaded - thread-safe"""
@@ -45,39 +66,39 @@ def ensure_model_loaded():
         
         try:
             print("=" * 50, flush=True)
-            print("LOADING: Starting model load", flush=True)
-            print(f"LOADING: Python {sys.version[:20]}...", flush=True)
-            print(f"LOADING: Directory: {os.getcwd()}", flush=True)
+            print("MODEL: Starting model load", flush=True)
+            print(f"MODEL: Python {sys.version[:20]}...", flush=True)
+            print(f"MODEL: Directory: {os.getcwd()}", flush=True)
             
             # Label Encoder
-            print("LOADING: Label Encoder...", flush=True)
+            print("MODEL: Creating Label Encoder...", flush=True)
             le = LabelEncoder().fit(GENRES)
-            print(f"LOADING: ✓ Encoder ready", flush=True)
+            print(f"MODEL: ✓ Encoder ready ({len(GENRES)} genres)", flush=True)
             
             # Model
-            print("LOADING: Model architecture...", flush=True)
+            print("MODEL: Creating model architecture...", flush=True)
             model = genreNet()
-            print("LOADING: ✓ Architecture ready", flush=True)
+            print("MODEL: ✓ Architecture ready", flush=True)
             
             # Weights
             if os.path.exists(MODEL_PATH):
-                print(f"LOADING: Weights from {MODEL_PATH}...", flush=True)
+                print(f"MODEL: Loading weights from {MODEL_PATH}...", flush=True)
                 state_dict = torch.load(MODEL_PATH, map_location=torch.device(DEVICE), weights_only=False)
                 model.load_state_dict(state_dict)
                 model.eval()
-                print("LOADING: ✓ Weights loaded", flush=True)
+                print("MODEL: ✓ Weights loaded successfully", flush=True)
             else:
-                print("LOADING: ⚠ Model file not found", flush=True)
+                print("MODEL: ⚠ WARNING - Model file not found!", flush=True)
                 model = None
                 return False
                 
             print("=" * 50, flush=True)
-            print("LOADING COMPLETE", flush=True)
+            print("MODEL: LOADING COMPLETE", flush=True)
             print("=" * 50, flush=True)
             return True
             
         except Exception as e:
-            print(f"LOADING ERROR: {e}", flush=True)
+            print(f"MODEL ERROR: {e}", flush=True)
             import traceback
             traceback.print_exc()
             model = None
@@ -125,6 +146,7 @@ def predict_genre(data_chunks):
 # API Endpoints
 @app.get("/")
 def home():
+    print("REQUEST: GET /", flush=True)
     # Try to load model on first request
     ensure_model_loaded()
     
@@ -138,6 +160,7 @@ def home():
 
 @app.get("/health")
 def health():
+    print("REQUEST: GET /health", flush=True)
     # Try to load model
     ensure_model_loaded()
     
@@ -150,6 +173,8 @@ def health():
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    print(f"REQUEST: POST /predict - file: {file.filename}", flush=True)
+    
     # Ensure model is loaded
     if not ensure_model_loaded():
         raise HTTPException(503, "Model is loading, please try again")
@@ -192,7 +217,11 @@ async def predict(file: UploadFile = File(...)):
         traceback.print_exc()
         return JSONResponse({"error": str(e)}, 500)
 
+print("=" * 60, flush=True)
+print("STARTUP: Module loading complete - app is ready", flush=True)
+print("=" * 60, flush=True)
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
-    print(f"Starting server on port {port}", flush=True)
+    print(f"MAIN: Starting uvicorn on port {port}", flush=True)
     uvicorn.run(app, host="0.0.0.0", port=port)
