@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 import torch
 import numpy as np
@@ -7,128 +7,86 @@ from librosa.feature import melspectrogram
 from io import BytesIO
 from collections import Counter
 from sklearn.preprocessing import LabelEncoder
-import uvicorn
 import os
-import sys
-import threading
-
-# Print IMMEDIATELY when module loads - before any other imports
-print("=" * 60, flush=True)
-print("STARTUP: main.py module is loading...", flush=True)
-print(f"STARTUP: Python version {sys.version.split()[0]}", flush=True)
-print(f"STARTUP: Working directory: {os.getcwd()}", flush=True)
-print("=" * 60, flush=True)
 
 from model import genreNet 
 from config import GENRES 
 
-print("STARTUP: Imports successful", flush=True)
-print("STARTUP: Creating FastAPI app...", flush=True)
+print("=" * 60, flush=True)
+print("APP INIT: Starting application initialization", flush=True)
 
-app = FastAPI(title="Audio Genre Classification API")
+app = FastAPI(title="Music Genre Classification API")
 
-print("STARTUP: FastAPI app created", flush=True)
-
+# Configuration
 MODEL_PATH = "net.pt"
 DEVICE = "cpu"
 
-# Global variables
-le = None
+# Initialize label encoder at module level (lightweight)
+le = LabelEncoder().fit(GENRES)
+print(f"APP INIT: Label encoder ready with {len(GENRES)} genres", flush=True)
+
+# Model will be loaded on first request (lazy loading)
 model = None
-_loading = False
-_load_lock = threading.Lock()
 
-# Startup event - signals to uvicorn that app is ready
-@app.on_event("startup")
-async def startup_event():
-    print("=" * 60, flush=True)
-    print("UVICORN: Application startup event triggered", flush=True)
-    print("UVICORN: Server is binding to port", flush=True)
-    print("UVICORN: App is ready to receive requests", flush=True)
-    print("=" * 60, flush=True)
+print("APP INIT: FastAPI app created successfully", flush=True)
+print("=" * 60, flush=True)
 
-def ensure_model_loaded():
-    """Load model if not already loaded - thread-safe"""
-    global model, le, _loading
+def load_model_if_needed():
+    """Load model on first request - lazy loading"""
+    global model
     
-    if model is not None and le is not None:
+    if model is not None:
         return True
     
-    with _load_lock:
-        # Double-check after acquiring lock
-        if model is not None and le is not None:
-            return True
-            
-        if _loading:
-            return False
-        
-        _loading = True
-        
-        try:
-            print("=" * 50, flush=True)
-            print("MODEL: Starting model load", flush=True)
-            print(f"MODEL: Python {sys.version[:20]}...", flush=True)
-            print(f"MODEL: Directory: {os.getcwd()}", flush=True)
-            
-            # Label Encoder
-            print("MODEL: Creating Label Encoder...", flush=True)
-            le = LabelEncoder().fit(GENRES)
-            print(f"MODEL: ✓ Encoder ready ({len(GENRES)} genres)", flush=True)
-            
-            # Model
-            print("MODEL: Creating model architecture...", flush=True)
-            model = genreNet()
-            print("MODEL: ✓ Architecture ready", flush=True)
-            
-            # Weights
-            if os.path.exists(MODEL_PATH):
-                print(f"MODEL: Loading weights from {MODEL_PATH}...", flush=True)
-                state_dict = torch.load(MODEL_PATH, map_location=torch.device(DEVICE), weights_only=False)
-                model.load_state_dict(state_dict)
-                model.eval()
-                print("MODEL: ✓ Weights loaded successfully", flush=True)
-            else:
-                print("MODEL: ⚠ WARNING - Model file not found!", flush=True)
-                model = None
-                return False
-                
-            print("=" * 50, flush=True)
-            print("MODEL: LOADING COMPLETE", flush=True)
-            print("=" * 50, flush=True)
-            return True
-            
-        except Exception as e:
-            print(f"MODEL ERROR: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
-            model = None
-            le = None
-            return False
-        finally:
-            _loading = False
-
-# Helper Functions
-def preprocess_audio(audio_bytes: bytes, sr=22050):
     try:
-        y, sr = librosa.load(BytesIO(audio_bytes), mono=True, sr=sr)
+        print("MODEL: Loading model for first time...", flush=True)
+        model_instance = genreNet()
+        
+        if os.path.exists(MODEL_PATH):
+            state_dict = torch.load(MODEL_PATH, map_location=torch.device(DEVICE), weights_only=False)
+            model_instance.load_state_dict(state_dict)
+            model_instance.eval()
+            model = model_instance
+            print("MODEL: ✓ Model loaded successfully", flush=True)
+            return True
+        else:
+            print(f"MODEL: ERROR - {MODEL_PATH} not found", flush=True)
+            return False
+            
+    except Exception as e:
+        print(f"MODEL: ERROR loading model - {e}", flush=True)
+        return False
+
+def extract_features(audio_bytes: bytes):
+    """Extract mel spectrogram features from audio bytes"""
+    try:
+        # Load audio
+        y, sr = librosa.load(BytesIO(audio_bytes), mono=True, sr=22050)
+        
+        # Get Mel Spectrogram
         S = melspectrogram(y=y, sr=sr).T
+        
+        # Trim to fit 128 width chunks
         S = S[:-1 * (S.shape[0] % 128)]
         
         if S.shape[0] == 0:
             return None
 
+        # Split into chunks
         num_chunk = int(S.shape[0] / 128)
         data_chunks = np.split(S, num_chunk)
         return data_chunks
+        
     except Exception as e:
-        print(f"PREPROCESS ERROR: {e}", flush=True)
+        print(f"FEATURE EXTRACTION ERROR: {e}", flush=True)
         return None
 
-def predict_genre(data_chunks):
-    genres = []
-    if model is None or le is None:
+def predict_genres(data_chunks):
+    """Predict genres from audio chunks"""
+    if model is None:
         return []
-        
+    
+    genres = []
     with torch.no_grad():
         for data in data_chunks:
             data_tensor = torch.FloatTensor(data).view(1, 1, 128, 128).to(DEVICE)
@@ -141,87 +99,85 @@ def predict_genre(data_chunks):
             
             if pred_val >= 0.5:
                 genres.append(pred_genre)
+    
     return genres
 
-# API Endpoints
 @app.get("/")
 def home():
-    print("REQUEST: GET /", flush=True)
-    # Try to load model on first request
-    ensure_model_loaded()
-    
     return {
-        "message": "Genre Classification API",
+        "message": "Music Genre Classification API",
         "status": "running",
         "model_loaded": model is not None,
-        "encoder_loaded": le is not None,
-        "endpoints": ["/health", "/predict"]
+        "endpoints": {
+            "health": "/health",
+            "predict": "/predict-genre"
+        }
     }
 
 @app.get("/health")
 def health():
-    print("REQUEST: GET /health", flush=True)
-    # Try to load model
-    ensure_model_loaded()
-    
     return {
         "status": "healthy",
-        "model": model is not None,
-        "encoder": le is not None,
-        "loading": _loading
+        "model_loaded": model is not None
     }
 
-@app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    print(f"REQUEST: POST /predict - file: {file.filename}", flush=True)
-    
-    # Ensure model is loaded
-    if not ensure_model_loaded():
-        raise HTTPException(503, "Model is loading, please try again")
-    
-    if model is None or le is None:
-        raise HTTPException(503, "Service not ready")
-    
-    if not file.content_type.startswith("audio/"):
-        raise HTTPException(400, "Must be audio file")
-
+@app.post("/predict-genre")
+async def predict_genre(audio_file: UploadFile = File(...)):
+    """Predict music genre from audio file"""
     try:
-        audio_bytes = await file.read()
-        chunks = preprocess_audio(audio_bytes)
+        # Load model if not already loaded
+        if not load_model_if_needed():
+            return JSONResponse(
+                content={"error": "Model not available"},
+                status_code=503
+            )
         
+        # Read audio file
+        audio_bytes = await audio_file.read()
+        
+        # Extract features
+        chunks = extract_features(audio_bytes)
         if not chunks:
-            return JSONResponse({"error": "Audio too short"}, 400)
-
-        predicted_genres = predict_genre(chunks)
+            return JSONResponse(
+                content={"error": "Audio processing failed or audio too short"},
+                status_code=400
+            )
+        
+        # Predict genres
+        predicted_genres = predict_genres(chunks)
         
         if not predicted_genres:
-            return {"result": "No genre detected"}
-
+            return JSONResponse(
+                content={"result": "No genre detected with high confidence"},
+                status_code=200
+            )
+        
+        # Calculate percentages
         count = Counter(predicted_genres)
         total = sum(count.values())
         
         results = []
         for genre, freq in count.most_common():
             percentage = (freq / total) * 100
-            results.append({"genre": genre, "confidence": f"{percentage:.2f}%"})
-
-        return {
-            "filename": file.filename,
-            "top_prediction": results[0]['genre'],
-            "breakdown": results
-        }
-
+            results.append({
+                "genre": genre,
+                "confidence": f"{percentage:.2f}%"
+            })
+        
+        return JSONResponse(content={
+            "filename": audio_file.filename,
+            "predicted_genre": results[0]['genre'],
+            "all_predictions": results
+        })
+        
     except Exception as e:
-        print(f"PREDICT ERROR: {e}", flush=True)
+        print(f"PREDICTION ERROR: {e}", flush=True)
         import traceback
         traceback.print_exc()
-        return JSONResponse({"error": str(e)}, 500)
+        return JSONResponse(
+            content={"error": str(e)},
+            status_code=500
+        )
 
-print("=" * 60, flush=True)
-print("STARTUP: Module loading complete - app is ready", flush=True)
-print("=" * 60, flush=True)
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    print(f"MAIN: Starting uvicorn on port {port}", flush=True)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+print("APP INIT: All routes registered", flush=True)
+print("APP INIT: Application ready to start", flush=True)
