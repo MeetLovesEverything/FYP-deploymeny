@@ -1,0 +1,28 @@
+# Ignore common operating system files
+.DS_Store
+Thumbs.db
+
+# Ignore build artifacts
+build/
+dist/
+*.log
+*.tmp
+*.bak
+
+# Ignore node_modules directory for Node.js projects
+node_modules/
+
+# Ignore Python specific files
+__pycache__/
+*.pyc
+venv/
+
+# Ignore environment variables and sensitive information
+.env
+config.local.js
+
+# Ignore specific files by name
+my_secret_key.pem
+
+# Exclude a specific file from an otherwise ignored directory
+!node_modules/important_file.js
