@@ -27,16 +27,40 @@ model = None
 @app.on_event("startup")
 async def load_model():
     global model
-    model = genreNet()
+    print("=" * 50)
+    print("Starting application...")
+    print(f"Current working directory: {os.getcwd()}")
+    print(f"Files in directory: {os.listdir('.')}")
+    print("=" * 50)
+    
     try:
+        model = genreNet()
+        print("Model architecture initialized")
+        
         if os.path.exists(MODEL_PATH):
-            model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device(DEVICE)))
+            print(f"Loading model from {MODEL_PATH}...")
+            # Use weights_only=True for security in newer PyTorch versions
+            try:
+                model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device(DEVICE), weights_only=True))
+            except TypeError:
+                # Fallback for older PyTorch versions
+                model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device(DEVICE)))
             model.eval()
-            print(f"-> Model loaded successfully from {MODEL_PATH}")
+            print(f"✓ Model loaded successfully from {MODEL_PATH}")
         else:
-            print(f"WARNING: {MODEL_PATH} not found. Please upload your model file.")
+            print(f"⚠ WARNING: {MODEL_PATH} not found in {os.getcwd()}")
+            print("API will start but predictions will fail until model is available")
+            model = None
     except Exception as e:
-        print(f"Error loading model: {e}")
+        print(f"✗ Error loading model: {e}")
+        print(f"Error type: {type(e).__name__}")
+        import traceback
+        traceback.print_exc()
+        model = None
+    
+    print("=" * 50)
+    print("Application startup complete")
+    print("=" * 50)
 
 # --- Helper Functions ---
 def preprocess_audio(audio_bytes: bytes, sr=22050):
@@ -82,10 +106,27 @@ def predict_genre(data_chunks):
 
 @app.get("/")
 def home():
-    return {"message": "Genre Classification API is running. Send POST request to /predict"}
+    return {
+        "message": "Genre Classification API is running",
+        "status": "healthy",
+        "model_loaded": model is not None,
+        "endpoints": {
+            "predict": "/predict (POST)"
+        }
+    }
+
+@app.get("/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "model_loaded": model is not None
+    }
 
 @app.post("/predict")
 async def predict_audio(file: UploadFile = File(...)):
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded. Please contact administrator.")
+    
     if not file.content_type.startswith("audio/"):
         raise HTTPException(status_code=400, detail="File must be an audio file.")
 
@@ -116,6 +157,9 @@ async def predict_audio(file: UploadFile = File(...)):
         }
 
     except Exception as e:
+        print(f"Error during prediction: {e}")
+        import traceback
+        traceback.print_exc()
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 if __name__ == "__main__":
